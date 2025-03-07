@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EduSex</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -98,8 +99,16 @@
             position: relative;
         }
         .calendar .day.has-note {
-            background-color: #28a745;
-            color: white;
+            background-color: #ff8c42; /* Naranja para notas no menstruales */
+        }
+        .calendar .day.menstruation {
+            background-color: #ff6f69; /* Rojo para menstruación */
+        }
+        .calendar .day.fertile {
+            background-color: #ffaaa5; /* Rosado para días fértiles */
+        }
+        .calendar .day.infertile {
+            background-color: #a8e6cf; /* Aqua para días infértiles */
         }
         .calendar .day:hover {
             background-color: #007bff;
@@ -146,6 +155,43 @@
         }
         .note-form button:hover {
             background-color: #c82333;
+        }
+
+        /* Estilos para el cuadro de confirmación personalizado */
+        .overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 999;
+        }
+        .confirmation-box {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+            text-align: center;
+        }
+        .confirmation-box button {
+            margin: 5px;
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .confirmation-box button:hover {
+            background-color: #0056b3;
         }
     </style>
 </head>
@@ -205,6 +251,14 @@
             </div>
         </section>
     </main>
+
+    <!-- Cuadro de confirmación personalizado -->
+    <div class="overlay" id="overlay"></div>
+    <div class="confirmation-box" id="confirmation-box">
+        <p>¿Es menstruación?</p>
+        <button onclick="confirmMenstruation(true)">Sí</button>
+        <button onclick="confirmMenstruation(false)">No</button>
+    </div>
     
     <nav class="nav">
         <button onclick="showSection('cuenta')">Cuenta</button>
@@ -214,8 +268,29 @@
     
     <script>
         let selectedDate = null;
+        let menstruationDate = null; // Fecha en la que se espera la siguiente nota
 
-        // Función para mostrar secciones
+        // Función para verificar si el usuario ha iniciado sesión
+        function checkLoggedIn() {
+            const loggedInUser = localStorage.getItem('loggedInUser');
+            if (!loggedInUser) {
+                showSection('cuenta'); // Redirigir a la sección de cuenta si no hay usuario logueado
+            } else {
+                // Mostrar el perfil del usuario
+                document.getElementById('user-name').innerText = loggedInUser;
+                document.getElementById('login-form').style.display = 'none';
+                document.getElementById('profile').style.display = 'block';
+
+                // Cargar la imagen de perfil si existe
+                const storedUser = JSON.parse(localStorage.getItem(loggedInUser));
+                if (storedUser.profileImage) {
+                    document.getElementById('profile-image').src = storedUser.profileImage;
+                    document.getElementById('profile-image').style.display = 'block';
+                }
+            }
+        }
+
+        // Función para mostrar u ocultar secciones
         function showSection(sectionId) {
             document.querySelectorAll('.content').forEach(section => {
                 section.classList.remove('active');
@@ -236,6 +311,12 @@
 
         // Función para cargar el calendario
         function loadCalendar() {
+            const loggedInUser = localStorage.getItem('loggedInUser');
+            if (!loggedInUser) {
+                // Si no hay usuario logueado, no aplicar colores
+                return;
+            }
+
             const month = parseInt(document.getElementById('month-select').value);
             const year = parseInt(document.getElementById('year-select').value);
             const calendarEl = document.getElementById('calendar');
@@ -245,33 +326,99 @@
             const lastDay = new Date(year, month + 1, 0);
             const startDay = firstDay.getDay() === 0 ? 6 : firstDay.getDay() - 1; // Ajuste para empezar en lunes
 
+            // Crear días vacíos para alinear el primer día del mes
             for (let i = 0; i < startDay; i++) {
                 const emptyDay = document.createElement('div');
                 emptyDay.className = 'day';
                 calendarEl.appendChild(emptyDay);
             }
 
+            // Crear días del mes
             for (let i = 1; i <= lastDay.getDate(); i++) {
                 const dayEl = document.createElement('div');
                 dayEl.className = 'day';
                 dayEl.textContent = i;
+
+                const currentDate = new Date(year, month, i);
+                const cycleDay = getCycleDay(currentDate); // Obtener el día del ciclo menstrual
+
+                // Aplicar colores según el estado del ciclo (solo si el usuario ha iniciado sesión)
+                if (isMenstruationDate(currentDate)) {
+                    dayEl.classList.add('menstruation'); // Menstruación
+                } else if (isFertileDay(cycleDay)) {
+                    dayEl.classList.add('fertile'); // Días fértiles
+                } else {
+                    dayEl.classList.add('infertile'); // Días infértiles
+                }
+
+                // Verificar si hay una nota para este día (solo si el usuario ha iniciado sesión)
+                const noteKey = `note-${loggedInUser}-${currentDate.toISOString().split('T')[0]}`;
+                const note = localStorage.getItem(noteKey);
+                if (note) {
+                    dayEl.classList.add('has-note'); // Agregar clase para notas
+                }
+
                 dayEl.addEventListener('click', () => selectDate(year, month, i));
                 calendarEl.appendChild(dayEl);
             }
+        }
 
-            loadNotes(year, month);
+        // Función para obtener el día del ciclo menstrual
+        function getCycleDay(date) {
+            const loggedInUser = localStorage.getItem('loggedInUser');
+            if (!loggedInUser) return null;
+
+            const menstruationStart = localStorage.getItem(`menstruationDate-${loggedInUser}`);
+            if (!menstruationStart) return null;
+
+            const startDate = new Date(menstruationStart);
+            const diffTime = date - startDate;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+            return diffDays >= 0 ? (diffDays % 28) + 1 : null; // Ciclo de 28 días
+        }
+
+        // Función para verificar si es un día de menstruación
+        function isMenstruationDate(date) {
+            const loggedInUser = localStorage.getItem('loggedInUser');
+            if (!loggedInUser) return false;
+
+            const menstruationStart = localStorage.getItem(`menstruationDate-${loggedInUser}`);
+            if (!menstruationStart) return false;
+
+            const startDate = new Date(menstruationStart);
+            const diffTime = date - startDate;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+            return diffDays >= 0 && diffDays < 5; // Primeros 5 días
+        }
+
+        // Función para verificar si es un día fértil
+        function isFertileDay(cycleDay) {
+            if (cycleDay === null) return false;
+            return cycleDay >= 10 && cycleDay <= 19; // Días 10-19 del ciclo
         }
 
         // Función para seleccionar una fecha
         function selectDate(year, month, day) {
             selectedDate = new Date(year, month, day);
-            const noteText = localStorage.getItem(`note-${selectedDate.toISOString().split('T')[0]}`) || '';
+            const loggedInUser = localStorage.getItem('loggedInUser');
+            if (!loggedInUser) return;
+
+            const noteKey = `note-${loggedInUser}-${selectedDate.toISOString().split('T')[0]}`;
+            const noteText = localStorage.getItem(noteKey) || '';
             document.getElementById('note-text').value = noteText;
             showNotification(`Fecha seleccionada: ${selectedDate.toLocaleDateString()}`);
         }
 
         // Función para agregar una nota
         function addNote() {
+            const loggedInUser = localStorage.getItem('loggedInUser');
+            if (!loggedInUser) {
+                showNotification("Por favor, inicia sesión para agregar una nota.", 'error');
+                return;
+            }
+
             if (!selectedDate) {
                 showNotification("Por favor, selecciona una fecha.", 'error');
                 return;
@@ -283,41 +430,102 @@
                 return;
             }
 
-            localStorage.setItem(`note-${selectedDate.toISOString().split('T')[0]}`, noteText);
-            loadCalendar();
-            showNotification("Nota agregada exitosamente");
+            // Mostrar el cuadro de confirmación
+            document.getElementById('overlay').style.display = 'block';
+            document.getElementById('confirmation-box').style.display = 'block';
         }
+
+        // Función para confirmar menstruación
+        function confirmMenstruation(isMenstruation) {
+    const loggedInUser = localStorage.getItem('loggedInUser');
+    if (!loggedInUser) {
+        showNotification("Por favor, inicia sesión para agregar una nota.", 'error');
+        return;
+    }
+
+    if (!selectedDate) {
+        showNotification("Por favor, selecciona una fecha.", 'error');
+        return;
+    }
+
+    const noteText = document.getElementById('note-text').value.trim();
+    if (!noteText) {
+        showNotification("La nota no puede estar vacía.", 'error');
+        return;
+    }
+
+    Swal.fire({
+        title: "¿Confirmar acción?",
+        text: isMenstruation ? "¿Deseas registrar esta nota como inicio de menstruación?" : "¿Deseas guardar esta nota?",
+        icon: "question",
+        showCancelButton: true,
+        confirmButtonText: "Sí, guardar",
+        cancelButtonText: "Cancelar"
+    }).then((result) => {
+        if (result.isConfirmed) {
+            // Ocultar el cuadro de confirmación si existe
+            const overlay = document.getElementById('overlay');
+            const confirmationBox = document.getElementById('confirmation-box');
+            if (overlay) overlay.style.display = 'none';
+            if (confirmationBox) confirmationBox.style.display = 'none';
+
+            const noteKey = `note-${loggedInUser}-${selectedDate.toISOString().split('T')[0]}`;
+            localStorage.setItem(noteKey, noteText);
+
+            if (isMenstruation) {
+                localStorage.setItem(`menstruationDate-${loggedInUser}`, selectedDate.toISOString());
+            }
+
+            showNotification("Nota agregada exitosamente");
+            loadCalendar(); // Recargar calendario para reflejar cambios
+        }
+    });
+}
+
+
 
         // Función para borrar una nota
         function deleteNote() {
-            if (!selectedDate) {
-                showNotification("Por favor, selecciona una fecha.", 'error');
-                return;
+    const loggedInUser = localStorage.getItem('loggedInUser');
+    if (!loggedInUser) {
+        showNotification("Por favor, inicia sesión para borrar una nota.", 'error');
+        return;
+    }
+
+    if (!selectedDate) {
+        showNotification("Por favor, selecciona una fecha.", 'error');
+        return;
+    }
+
+    Swal.fire({
+        title: "¿Estás seguro?",
+        text: "Esta acción eliminará la nota de forma permanente.",
+        icon: "warning",
+        showCancelButton: true,
+        confirmButtonText: "Sí, borrar",
+        cancelButtonText: "Cancelar"
+    }).then((result) => {
+        if (result.isConfirmed) {
+            const noteKey = `note-${loggedInUser}-${selectedDate.toISOString().split('T')[0]}`;
+            const noteText = localStorage.getItem(noteKey);
+
+            const menstruationKey = `menstruationDate-${loggedInUser}`;
+            const menstruationDate = localStorage.getItem(menstruationKey);
+
+            if (menstruationDate && new Date(menstruationDate).toISOString().split('T')[0] === selectedDate.toISOString().split('T')[0]) {
+                localStorage.removeItem(menstruationKey);
             }
 
-            localStorage.removeItem(`note-${selectedDate.toISOString().split('T')[0]}`);
+            localStorage.removeItem(noteKey);
             document.getElementById('note-text').value = '';
             loadCalendar();
             showNotification("Nota borrada exitosamente");
         }
+    });
+}
 
-        // Función para cargar las notas
-        function loadNotes(year, month) {
-            const days = document.querySelectorAll('.calendar .day');
-            days.forEach(dayEl => {
-                if (dayEl.textContent && !isNaN(dayEl.textContent)) {
-                    const date = new Date(year, month, parseInt(dayEl.textContent));
-                    const note = localStorage.getItem(`note-${date.toISOString().split('T')[0]}`);
-                    if (note) {
-                        dayEl.classList.add('has-note');
-                    } else {
-                        dayEl.classList.remove('has-note');
-                    }
-                }
-            });
-        }
 
-        // Funciones mejoradas
+        // Funciones de inicio de sesión y registro
         function login() {
             const username = document.getElementById('username').value.trim();
             const password = document.getElementById('password').value.trim();
